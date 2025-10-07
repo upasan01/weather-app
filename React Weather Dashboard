@@ -1,0 +1,378 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Search, Cloud, CloudRain, Sun, CloudLightning, CloudSnow, Wind, Droplet, Thermometer,
+  Loader, AlertTriangle, MapPin, Globe
+} from 'lucide-react';
+
+// --- Configuration ---
+// !!! IMPORTANT: Paste your actual API Keys here.
+// 1. OpenWeatherMap Key (for weather data)
+const OWM_API_KEY = ""; // <-- INSERT YOUR OPENWEATHERMAP KEY HERE
+const OWM_API_URL = "https://api.openweathermap.org/data/2.5/weather";
+
+// 2. Google Maps Embed/JS API Key (for map rendering)
+const GOOGLE_MAPS_API_KEY = ""; // <-- INSERT YOUR GOOGLE MAPS KEY HERE
+const DEFAULT_CITY = "New York";
+
+// --- Utility Functions ---
+
+/**
+ * Returns the appropriate Lucide icon component based on the weather condition.
+ */
+const getWeatherIconComponent = (condition) => {
+    switch (condition.toLowerCase()) {
+        case 'clear':
+            return <Sun className="w-full h-full text-yellow-300" />;
+        case 'clouds':
+            return <Cloud className="w-full h-full text-gray-300" />;
+        case 'rain':
+        case 'drizzle':
+            return <CloudRain className="w-full h-full text-blue-400" />;
+        case 'thunderstorm':
+            return <CloudLightning className="w-full h-full text-yellow-500" />;
+        case 'snow':
+            return <CloudSnow className="w-full h-full text-blue-200" />;
+        default:
+            return <Cloud className="w-full h-full text-gray-400" />;
+    }
+};
+
+/**
+ * Formats the current date.
+ */
+const getCurrentDate = () => {
+    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    return new Date().toLocaleDateString('en-US', options);
+};
+
+// --- Map Component ---
+const WeatherMap = ({ lat, lon, cityName }) => {
+    const mapRef = useRef(null);
+    const [isMapScriptLoaded, setIsMapScriptLoaded] = useState(false);
+
+    // 1. Dynamically load the Google Maps script
+    useEffect(() => {
+        if (typeof window.google !== 'undefined' && typeof window.google.maps !== 'undefined') {
+            setIsMapScriptLoaded(true);
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&callback=initMap`;
+        script.async = true;
+        script.onerror = () => console.error("Google Maps script failed to load.");
+        script.onload = () => setIsMapScriptLoaded(true); // Failsafe if callback doesn't fire immediately
+
+        // Define a global callback function (required by Google Maps API script loading)
+        // This is necessary because the script loading mechanism is external to React's lifecycle.
+        window.initMap = () => setIsMapScriptLoaded(true);
+
+        document.body.appendChild(script);
+
+        return () => {
+            // Clean up the global callback
+            delete window.initMap;
+        };
+    }, []); // Run only once on mount
+
+    // 2. Initialize and display the map when coordinates and script are ready
+    useEffect(() => {
+        if (isMapScriptLoaded && mapRef.current && lat !== undefined && lon !== undefined) {
+            try {
+                // Check if google maps library is actually available
+                if (typeof window.google === 'undefined' || typeof window.google.maps === 'undefined') {
+                    console.error("Google Maps object not found. Check your API key and network.");
+                    return;
+                }
+
+                const map = new window.google.maps.Map(mapRef.current, {
+                    center: { lat: lat, lng: lon },
+                    zoom: 10,
+                    disableDefaultUI: true, // Clean map look
+                    zoomControl: true,
+                });
+
+                // Add a simple marker
+                new window.google.maps.Marker({
+                    position: { lat: lat, lng: lon },
+                    map,
+                    title: cityName,
+                });
+            } catch (e) {
+                console.error("Error initializing Google Map:", e);
+            }
+        }
+    }, [isMapScriptLoaded, lat, lon, cityName]);
+
+
+    if (!GOOGLE_MAPS_API_KEY) {
+         return (
+             <div className="flex items-center justify-center p-6 bg-red-800/20 border border-red-700 rounded-xl mt-4 h-64 text-red-300">
+                 <AlertTriangle className="w-5 h-5 mr-2" />
+                 Map Error: Please insert your **Google Maps API Key**.
+             </div>
+         );
+    }
+    
+    if (!isMapScriptLoaded) {
+        return (
+            <div className="flex flex-col items-center justify-center p-6 bg-gray-700/50 rounded-xl mt-4 h-64 text-gray-300">
+                <Loader className="w-6 h-6 animate-spin mb-2" />
+                Loading map...
+            </div>
+        );
+    }
+
+    return (
+        <div 
+            ref={mapRef} 
+            className="w-full h-64 rounded-xl shadow-2xl transition duration-500 mt-8 border-2 border-blue-600/50" 
+            aria-label="Google Map showing weather location"
+        />
+    );
+};
+
+// --- Main Application Component ---
+
+const App = () => {
+    const [city, setCity] = useState('');
+    const [weatherData, setWeatherData] = useState(null);
+    const [viewMode, setViewMode] = useState('idle'); // 'idle', 'loading', 'error', 'success'
+    const [errorMessage, setErrorMessage] = useState('');
+    const [showMap, setShowMap] = useState(false);
+
+    /**
+     * Fetches weather data from the API. Uses useCallback to ensure stability.
+     */
+    const fetchWeather = useCallback(async (cityName) => {
+        // API Key check
+        if (!OWM_API_KEY) {
+            setErrorMessage("API Key Error: Please insert your OpenWeatherMap API key in the 'OWM_API_KEY' constant.");
+            setViewMode('error');
+            return;
+        }
+
+        if (!cityName) {
+            setErrorMessage("Please enter a city name.");
+            setViewMode('error');
+            return;
+        }
+
+        setViewMode('loading');
+        setErrorMessage('');
+        setWeatherData(null);
+        setShowMap(false); // Hide map while loading
+
+        const apiUrl = `${OWM_API_URL}?q=${cityName}&appid=${OWM_API_KEY}&units=metric`;
+
+        try {
+            const response = await fetch(apiUrl);
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                if (errorData.cod === "404") {
+                    throw new Error(`City "${cityName}" not found.`);
+                }
+                if (errorData.cod === 401) {
+                     throw new Error("Invalid OpenWeatherMap API Key. Please ensure your key is correct and active.");
+                }
+                throw new Error(errorData.message || `HTTP error! Status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            setWeatherData(data);
+            setViewMode('success');
+            // Show map automatically on success
+            setShowMap(true); 
+
+        } catch (error) {
+            console.error("Error fetching weather data:", error);
+            setErrorMessage(error.message || "An unexpected error occurred.");
+            setViewMode('error');
+        }
+    }, []);
+
+    // Fetch default city weather on initial load
+    useEffect(() => {
+        fetchWeather(DEFAULT_CITY);
+    }, [fetchWeather]);
+
+    // Handler for search button click or Enter key
+    const handleSearch = () => {
+        fetchWeather(city.trim() || DEFAULT_CITY);
+    };
+
+    // --- Component Rendering Functions ---
+
+    const renderIconBox = () => {
+        if (viewMode === 'success' && weatherData) {
+            const mainCondition = weatherData.weather[0].main;
+            const WeatherIcon = getWeatherIconComponent(mainCondition);
+            return (
+                <div className="w-32 h-32 md:w-40 md:h-40 mx-auto mb-4 animate-pulse-slow">
+                    {WeatherIcon}
+                </div>
+            );
+        }
+        return (
+            <div className="w-32 h-32 md:w-40 md:h-40 mx-auto mb-4 text-gray-500 flex items-center justify-center">
+                <CloudLightning className="w-1/2 h-1/2" />
+            </div>
+        );
+    };
+
+    const renderMainContent = () => {
+        if (viewMode === 'loading') {
+            return (
+                <div className="text-center p-8">
+                    <Loader className="w-10 h-10 animate-spin mx-auto text-blue-400" />
+                    <p className="mt-4 text-gray-300">Fetching weather data...</p>
+                </div>
+            );
+        }
+
+        if (viewMode === 'error') {
+            return (
+                <div className="text-center bg-red-700/70 p-6 rounded-xl border border-red-500 shadow-xl">
+                    <AlertTriangle className="w-8 h-8 mx-auto text-red-300" />
+                    <p className="mt-4 font-semibold text-red-100">Error</p>
+                    <p className="text-sm text-red-200 mt-1">{errorMessage}</p>
+                </div>
+            );
+        }
+
+        if (viewMode === 'success' && weatherData) {
+            const tempCelsius = Math.round(weatherData.main.temp);
+            const feelsLike = Math.round(weatherData.main.feels_like);
+            const description = weatherData.weather[0].description;
+            const humidity = weatherData.main.humidity;
+            const windSpeedKmH = (weatherData.wind.speed * 3.6).toFixed(1);
+
+            return (
+                <div className="text-center transition-opacity duration-500">
+                    
+                    {renderIconBox()}
+
+                    {/* Temperature and Description */}
+                    <div className="mb-6">
+                        <h2 className="text-7xl md:text-8xl font-extrabold mb-1">
+                            {tempCelsius}°C
+                        </h2>
+                        <p className="text-xl capitalize text-gray-300 font-medium">
+                            {description}
+                        </p>
+                    </div>
+
+                    {/* City and Date */}
+                    <div className="mb-10">
+                        <h1 className="text-3xl md:text-4xl font-semibold flex items-center justify-center space-x-2">
+                            <MapPin className="w-6 h-6 text-red-400" />
+                            <span>{weatherData.name}, {weatherData.sys.country}</span>
+                        </h1>
+                        <p className="text-sm text-gray-400 mt-1">{getCurrentDate()}</p>
+                    </div>
+
+                    {/* Details Grid */}
+                    <div className="grid grid-cols-2 gap-4 text-center mb-6">
+                        
+                        {/* Humidity */}
+                        <DetailCard 
+                            icon={<Droplet className="w-6 h-6 text-blue-300" />}
+                            value={`${humidity}%`}
+                            label="Humidity"
+                        />
+                        
+                        {/* Wind Speed */}
+                        <DetailCard 
+                            icon={<Wind className="w-6 h-6 text-green-300" />}
+                            value={`${windSpeedKmH} km/h`}
+                            label="Wind Speed"
+                        />
+                        
+                        {/* Feels Like */}
+                        <DetailCard 
+                            icon={<Thermometer className="w-6 h-6 text-red-300" />}
+                            value={`${feelsLike}°C`}
+                            label="Feels Like"
+                        />
+                        
+                        {/* Location Coords */}
+                         <DetailCard 
+                            icon={<MapPin className="w-6 h-6 text-purple-300" />}
+                            value={`${weatherData.coord.lat.toFixed(2)}, ${weatherData.coord.lon.toFixed(2)}`}
+                            label="Coordinates"
+                        />
+
+                    </div>
+                    
+                    {/* Map Toggle Button */}
+                    <button
+                        onClick={() => setShowMap(prev => !prev)}
+                        className="w-full py-3 mt-4 text-sm font-semibold rounded-xl bg-gray-700 hover:bg-gray-600 transition duration-300 flex items-center justify-center space-x-2"
+                    >
+                        <Globe className="w-4 h-4" />
+                        <span>{showMap ? 'Hide Map' : 'Show Location on Map'}</span>
+                    </button>
+                    
+                    {/* Map Area */}
+                    {showMap && (
+                        <WeatherMap 
+                            lat={weatherData.coord.lat} 
+                            lon={weatherData.coord.lon} 
+                            cityName={weatherData.name}
+                        />
+                    )}
+
+                </div>
+            );
+        }
+        
+        // Default idle view
+        return (
+            <div className="text-center p-8 text-gray-400">
+                {renderIconBox()}
+                <p className="text-lg">Search for a city to get the weather forecast.</p>
+            </div>
+        );
+    };
+
+    // --- Detail Card Component for clean rendering ---
+    const DetailCard = ({ icon, value, label }) => (
+        <div className="bg-gray-800 p-4 rounded-xl shadow-xl flex flex-col items-center">
+            <div className="mb-2">{icon}</div>
+            <p className="text-xl md:text-2xl font-bold">{value}</p>
+            <p className="text-xs uppercase text-gray-400 mt-1">{label}</p>
+        </div>
+    );
+
+    return (
+        <div className="p-4 flex items-center justify-center min-h-screen">
+            <div className="max-w-xl w-full text-white p-8 md:p-10 rounded-3xl backdrop-blur-sm bg-gray-900 shadow-[0_35px_60px_-15px_rgba(0,0,0,0.8)] border border-gray-700/50">
+                
+                {/* Search Area */}
+                <div className="flex space-x-3 mb-8">
+                    <input 
+                        type="text" 
+                        placeholder="Enter city name..."
+                        value={city}
+                        onChange={(e) => setCity(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                        className="flex-grow p-4 rounded-xl bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-4 focus:ring-blue-500/50 transition duration-300 shadow-inner" 
+                    />
+                    <button 
+                        onClick={handleSearch}
+                        className="search-btn bg-blue-600 text-white p-4 rounded-xl hover:bg-blue-700 flex items-center justify-center shadow-lg hover:shadow-blue-500/50 transition duration-300"
+                    >
+                        <Search className="w-6 h-6" />
+                    </button>
+                </div>
+
+                {/* Main Content Render */}
+                {renderMainContent()}
+
+            </div>
+        </div>
+    );
+};
+
+export default App;
